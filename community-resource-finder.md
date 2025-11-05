@@ -30,7 +30,7 @@ Every day (or week), the system runs a small background job that:
 ---
 
 ## Project Overview Diagram
-![System Overview](images\system-overview.png)
+<img width="846" height="521" alt="system-design" src="https://github.com/user-attachments/assets/f3102a8b-ba12-4b02-adfb-6c64a2439528" />
 
 Description:
 1. **Users** search or browse resources.  
@@ -43,8 +43,7 @@ Description:
 ---
 
 ## ERD – Entity Relationship Diagram
-
-![ERD](images\erd.png)
+<img width="3402" height="1896" alt="erd" src="https://github.com/user-attachments/assets/89273cf3-5ba9-4fed-97f1-c0f689bf03d3" />
 
 ### Main Entities
 - **Organization** – the group offering help (from data source)
@@ -55,8 +54,7 @@ Description:
 - **Embedding** – AI-generated vector for smarter search
 ---
 ## System Design Diagram
-
-![System Design](images\system-design.png)
+<img width="846" height="521" alt="system-design" src="https://github.com/user-attachments/assets/7200ab19-fcd7-4249-a05f-693aa438aada" />
 
 Components:
 - **Frontend:** Next.js (React) web app  
