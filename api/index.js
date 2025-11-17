@@ -1,3 +1,4 @@
+// api/index.js
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -6,31 +7,60 @@ const app = express();
 app.use(cors());
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgres://crf:crfpass@localhost:5432/crf'
+  connectionString: process.env.DATABASE_URL || 'postgres://crf:crfpass@localhost:5432/crf',
 });
 
-// Simple GET /resources endpoint
+// GET /resources?query=food&lat=40.233&lng=-111.657&radius=25
 app.get('/resources', async (req, res) => {
-  const { query = '', lat, lng } = req.query;
+  const q = (req.query.query || '').trim();
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  const radiusMiles = Number(req.query.radius) || 25;
+  const hasCoords = Number.isFinite(lat) && Number.isFinite(lng);
 
-  const sql = `
-    SELECT r.id, r.name, r.description, r.category,
-           o.phone,
-           CONCAT(l.address, ', ', l.city) AS address,
-           COALESCE(
-             ST_DistanceSphere(l.point, ST_MakePoint($2, $3)) / 1609.34,
-             NULL
-           ) AS miles
+  // With coordinates: apply radius + distance sort
+  const sqlWithGeo = `
+    SELECT
+      r.id, r.name, r.description, r.category,
+      o.phone,
+      CONCAT(l.address, ', ', l.city) AS address,
+      ST_Distance(
+        l.point,
+        ST_SetSRID(ST_MakePoint($2::double precision, $3::double precision), 4326)::geography
+      ) / 1609.34 AS miles
     FROM resources r
     LEFT JOIN organizations o ON o.id = r.organization_id
-    LEFT JOIN locations l ON l.resource_id = r.id
-    WHERE ($1 = '' OR (r.name ILIKE '%'||$1||'%' OR r.description ILIKE '%'||$1||'%'))
-    ORDER BY miles NULLS LAST
-    LIMIT 25;
+    LEFT JOIN locations     l ON l.resource_id = r.id
+    WHERE ($1 = '' OR r.name ILIKE '%'||$1||'%' OR r.description ILIKE '%'||$1||'%')
+      AND ST_DWithin(
+        l.point,
+        ST_SetSRID(ST_MakePoint($2::double precision, $3::double precision), 4326)::geography,
+        $4::double precision * 1609.34
+      )
+    ORDER BY miles NULLS LAST, r.id
+    LIMIT 50;
+  `;
+
+  // Without coordinates: no radius, no distance calc
+  const sqlNoGeo = `
+    SELECT
+      r.id, r.name, r.description, r.category,
+      o.phone,
+      CONCAT(l.address, ', ', l.city) AS address,
+      NULL::double precision AS miles
+    FROM resources r
+    LEFT JOIN organizations o ON o.id = r.organization_id
+    LEFT JOIN locations     l ON l.resource_id = r.id
+    WHERE ($1 = '' OR r.name ILIKE '%'||$1||'%' OR r.description ILIKE '%'||$1||'%')
+    ORDER BY r.id
+    LIMIT 50;
   `;
 
   try {
-    const { rows } = await pool.query(sql, [query, Number(lng), Number(lat)]);
+    const { rows } = hasCoords
+      ? await pool.query(sqlWithGeo, [q, lng, lat, radiusMiles])
+      : await pool.query(sqlNoGeo,  [q]);
+
     res.json(rows.map(x => ({
       id: x.id,
       name: x.name,
@@ -38,11 +68,13 @@ app.get('/resources', async (req, res) => {
       category: x.category,
       phone: x.phone,
       address: x.address,
-      distance: x.miles ? Math.round(x.miles * 10) / 10 : null,
-      directionsUrl: x.address ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(x.address)}` : null
+      distance: x.miles == null ? null : Math.round(x.miles * 10) / 10,
+      directionsUrl: x.address
+        ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(x.address)}`
+        : null,
     })));
   } catch (e) {
-    console.error(e);
+    console.error('DB error:', e.message);
     res.status(500).json({ error: 'query_failed' });
   }
 });
