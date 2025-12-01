@@ -10,6 +10,86 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgres://crf:crfpass@localhost:5432/crf',
 });
 
+const UGRC_BASE = (process.env.UGRC_BASE_URL || 'https://api.mapserv.utah.gov').replace(/\/$/, '');
+const UGRC_KEY = process.env.UGRC_API_KEY;
+
+// UGRC tables we can surface quickly (health facilities, libraries, parks)
+const UGRC_TABLES = [
+  {
+    table: 'health.licensed_health_care_facilities',
+    fields: 'FACILITY_NAME,ADDRESS,CITY,TELEPHONE,LICENSE_TYPE,shape@',
+    map: props => ({
+      name: props.FACILITY_NAME,
+      address: [props.ADDRESS, props.CITY].filter(Boolean).join(', '),
+      phone: props.TELEPHONE,
+      category: props.LICENSE_TYPE || 'Health Facility',
+    }),
+  },
+  {
+    table: 'society.public_libraries',
+    fields: 'LIBRARY,ADDRESS,CITY,PHONE,shape@',
+    map: props => ({
+      name: props.LIBRARY,
+      address: [props.ADDRESS, props.CITY].filter(Boolean).join(', '),
+      phone: props.PHONE,
+      category: 'Library',
+    }),
+  },
+  {
+    table: 'recreation.parks_local',
+    fields: 'NAME,TYPE,CITY,shape@',
+    map: props => ({
+      name: props.NAME,
+      address: props.CITY || '',
+      category: props.TYPE || 'Park',
+    }),
+  },
+];
+
+function haversineMiles(lat1, lon1, lat2, lon2) {
+  const toRad = d => (d * Math.PI) / 180;
+  const R = 6371e3; // meters
+  const phi1 = toRad(lat1);
+  const phi2 = toRad(lat2);
+  const dPhi = toRad(lat2 - lat1);
+  const dLambda = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dPhi / 2) * Math.sin(dPhi / 2) +
+    Math.cos(phi1) * Math.cos(phi2) *
+    Math.sin(dLambda / 2) * Math.sin(dLambda / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return (R * c) / 1609.34;
+}
+
+async function searchUgrcTable(tableCfg, lat, lng, bufferMeters) {
+  const safeBuffer = Math.min(bufferMeters, 2000); // UGRC docs warn about larger buffers
+  const geometry = encodeURIComponent(`point:{"x":${lng},"y":${lat},"spatialReference":{"wkid":4326}}`);
+  const url = `${UGRC_BASE}/api/v1/search/${tableCfg.table}/${tableCfg.fields}?geometry=${geometry}&buffer=${safeBuffer}&format=geojson&apikey=${UGRC_KEY}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`UGRC request failed ${res.status}`);
+  }
+  const data = await res.json();
+  const features = data.features || [];
+  return features
+    .map(f => {
+      const props = f.properties || {};
+      const geom = f.geometry;
+      if (!geom || geom.type !== 'Point' || !Array.isArray(geom.coordinates)) return null;
+      const [featureLng, featureLat] = geom.coordinates;
+      const base = tableCfg.map(props);
+      const distance = haversineMiles(lat, lng, featureLat, featureLng);
+      return {
+        ...base,
+        lat: featureLat,
+        lng: featureLng,
+        distance: Math.round(distance * 10) / 10,
+        source: tableCfg.table,
+      };
+    })
+    .filter(Boolean);
+}
+
 // GET /resources?query=food&lat=40.233&lng=-111.657&radius=25
 app.get('/resources', async (req, res) => {
   const q = (req.query.query || '').trim();
@@ -76,6 +156,31 @@ app.get('/resources', async (req, res) => {
   } catch (e) {
     console.error('DB error:', e.message);
     res.status(500).json({ error: 'query_failed' });
+  }
+});
+
+// GET /ugrc/resources?lat=40.24&lng=-111.65&buffer=2000
+// Returns combined UGRC layers (health facilities, libraries, parks) near a point.
+app.get('/ugrc/resources', async (req, res) => {
+  if (!UGRC_KEY) return res.status(500).json({ error: 'missing_ugrc_key' });
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  const buffer = Number(req.query.buffer) || 2000; // meters
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return res.status(400).json({ error: 'invalid_coords' });
+  }
+
+  try {
+    const results = [];
+    for (const cfg of UGRC_TABLES) {
+      const list = await searchUgrcTable(cfg, lat, lng, buffer);
+      results.push(...list);
+    }
+    results.sort((a, b) => (a.distance ?? 1e9) - (b.distance ?? 1e9));
+    res.json(results);
+  } catch (e) {
+    console.error('UGRC error:', e.message);
+    res.status(500).json({ error: 'ugrc_query_failed' });
   }
 });
 

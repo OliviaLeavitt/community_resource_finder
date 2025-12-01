@@ -32,7 +32,7 @@ export default function SearchBar({ onSearch, coords, setCoords }) {
         onChange={e => setRadius(Number(e.target.value))}
         title="Search radius (miles)"
       />
-      <button type="button" onClick={useMyLocation}>📍 My Location</button>
+      <button type="button" onClick={useMyLocation}>Use My Location</button>
       <button type="submit">Search</button>
     </form>
   );
